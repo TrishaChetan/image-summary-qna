@@ -45,6 +45,19 @@ def safe_query(model, prompt, image_bytes, num_predict):
     return None
 
 
+LANGUAGES = ["English", "Hindi", "Kannada", "Tamil", "Telugu", "Malayalam", "Marathi",
+             "Bengali", "Gujarati", "Spanish", "French", "German", "Japanese"]
+
+
+def language_instruction(language: str) -> str:
+    """Appended to every prompt. Small vision models drift back to English,
+    so the instruction is explicit and repeated at the end of the prompt."""
+    if language == "English":
+        return ""
+    return (f"\n\nIMPORTANT: Write your entire answer in {language}, using {language} script. "
+            f"Do not answer in English.")
+
+
 def build_question_prompt(question: str, history: list) -> str:
     """Include earlier Q&A turns so follow-up questions have context."""
     context = ""
@@ -57,8 +70,8 @@ def build_question_prompt(question: str, history: list) -> str:
     )
 
 
-def transcript(name: str, model: str, summary, history: list) -> str:
-    lines = [f"# Image analysis: {name}", f"_Model: {model} · {datetime.now():%Y-%m-%d %H:%M}_", ""]
+def transcript(name: str, model: str, summary, history: list, language: str = "English") -> str:
+    lines = [f"# Image analysis: {name}", f"_Model: {model} · Language: {language} · {datetime.now():%Y-%m-%d %H:%M}_", ""]
     if summary:
         lines += ["## Summary", summary, ""]
     if history:
@@ -75,7 +88,12 @@ st.caption("Chat with your image — ask follow-up questions and download the wh
 with st.sidebar:
     st.header("⚙️ Settings")
     model = st.selectbox("Model", MODEL_CHOICES, index=0)
+    language = st.selectbox("Answer language", LANGUAGES, index=0,
+                            help="Summary and answers are written in this language. You can ask questions in any language.")
     max_tokens = st.slider("Max tokens (higher = longer, slower)", 200, 1400, 900, step=50)
+    if language != "English":
+        st.caption("Non-Latin scripts use more tokens — raise max tokens if answers get cut off. "
+                   "qwen2.5vl handles Indian languages best.")
     st.caption("Tip: For speed, use smaller images and reduce max tokens.")
 
 uploaded = st.file_uploader("Upload an image (JPG/PNG)", type=["jpg", "jpeg", "png"])
@@ -99,7 +117,8 @@ c1, c2 = st.columns(2)
 with c1:
     if st.button("📝 Summarize (2 paragraphs, ≥500 words)", use_container_width=True):
         with st.spinner("Summarizing..."):
-            st.session_state.summary = safe_query(model, SUMMARY_PROMPT, image_bytes, max_tokens)
+            st.session_state.summary = safe_query(
+                model, SUMMARY_PROMPT + language_instruction(language), image_bytes, max_tokens)
 with c2:
     if st.button("🧹 Clear conversation", use_container_width=True):
         st.session_state.history = []
@@ -124,7 +143,7 @@ if question:
         with st.spinner("Thinking..."):
             answer = safe_query(
                 model,
-                build_question_prompt(question, st.session_state.history),
+                build_question_prompt(question, st.session_state.history) + language_instruction(language),
                 image_bytes,
                 min(400, max_tokens),
             )
@@ -135,7 +154,7 @@ if question:
 if st.session_state.summary or st.session_state.history:
     st.download_button(
         "⬇️ Download session (Markdown)",
-        transcript(uploaded.name, model, st.session_state.summary, st.session_state.history),
+        transcript(uploaded.name, model, st.session_state.summary, st.session_state.history, language),
         file_name=f"{uploaded.name.rsplit('.', 1)[0]}-analysis.md",
         mime="text/markdown",
     )
