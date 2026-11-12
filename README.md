@@ -9,6 +9,7 @@ Runs on local vision models through [Ollama](https://ollama.com).
 - 📝 Two-paragraph, 500+ word image summary
 - 💬 Chat-style Q&A with follow-up context (the last few turns are sent with each question)
 - 🌐 Answers in your language — English, Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati, Spanish, French, German or Japanese
+- 📚 Batch mode — upload up to 50 images, get a short summary of each with a progress bar, and download them all as CSV or Markdown
 - ⬇️ Export summary + conversation as Markdown
 - 🧹 Conversation resets automatically when you upload a new image
 - 🛟 Clear error messages when Ollama isn't running or a model is missing

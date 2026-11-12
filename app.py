@@ -1,4 +1,6 @@
 import base64
+import csv
+import io
 import hashlib
 from datetime import datetime
 
@@ -95,6 +97,66 @@ with st.sidebar:
         st.caption("Non-Latin scripts use more tokens — raise max tokens if answers get cut off. "
                    "qwen2.5vl handles Indian languages best.")
     st.caption("Tip: For speed, use smaller images and reduce max tokens.")
+
+mode = st.radio("Mode", ["💬 Chat with one image", "📚 Batch summarise"], horizontal=True,
+                label_visibility="collapsed")
+
+BATCH_PROMPT = (
+    "Look ONLY at the image. Describe it in 2-3 sentences: the main subject, the setting, "
+    "and anything notable (text, people, actions). Plain prose, no lists."
+)
+
+
+def batch_csv(rows):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["file", "summary"])
+    w.writerows(rows)
+    return buf.getvalue()
+
+
+def batch_markdown(rows):
+    parts = [f"# Image summaries ({len(rows)} images)", f"_Model: {model} · Language: {language} · "
+             f"{datetime.now():%Y-%m-%d %H:%M}_", ""]
+    for name, summary in rows:
+        parts += [f"## {name}", summary, ""]
+    return "\n".join(parts)
+
+
+if mode.startswith("📚"):
+    files = st.file_uploader("Upload images (JPG/PNG) — up to 50", type=["jpg", "jpeg", "png"],
+                             accept_multiple_files=True)
+    if not files:
+        st.info("Upload several images to get a short summary of each, then download them all as CSV or Markdown.")
+        st.stop()
+    files = files[:50]
+    if st.button(f"📝 Summarise {len(files)} image{'s' if len(files) != 1 else ''}", type="primary"):
+        rows = []
+        progress = st.progress(0.0, text="Starting…")
+        for i, f in enumerate(files, 1):
+            progress.progress((i - 1) / len(files), text=f"{i}/{len(files)} · {f.name}")
+            summary = safe_query(model, BATCH_PROMPT + language_instruction(language), f.getvalue(),
+                                 min(300, max_tokens))
+            if summary is None:  # Ollama down — error already shown, stop the batch
+                break
+            rows.append((f.name, summary))
+        progress.progress(1.0, text=f"Done · {len(rows)} of {len(files)} summarised")
+        st.session_state.batch_rows = rows
+
+    rows = st.session_state.get("batch_rows") or []
+    if rows:
+        for (name, summary), f in zip(rows, files):
+            with st.container(border=True):
+                c1, c2 = st.columns([1, 3])
+                c1.image(f.getvalue(), use_container_width=True)
+                c2.markdown(f"**{name}**")
+                c2.write(summary)
+        d1, d2 = st.columns(2)
+        d1.download_button("⬇️ CSV", batch_csv(rows), file_name="image-summaries.csv", mime="text/csv",
+                           use_container_width=True)
+        d2.download_button("⬇️ Markdown", batch_markdown(rows), file_name="image-summaries.md",
+                           mime="text/markdown", use_container_width=True)
+    st.stop()
 
 uploaded = st.file_uploader("Upload an image (JPG/PNG)", type=["jpg", "jpeg", "png"])
 
