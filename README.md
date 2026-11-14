@@ -11,6 +11,7 @@ Runs on local vision models through [Ollama](https://ollama.com).
 - 🌐 Answers in your language — English, Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati, Spanish, French, German or Japanese
 - 📚 Batch mode — upload up to 50 images, get a short summary of each with a progress bar, and download them all as CSV or Markdown
 - ⬇️ Export summary + conversation as Markdown
+- 📷 Photo info & privacy — shows camera, date taken and editing software, warns if the photo contains GPS location (with a map link), and offers a copy with all metadata removed
 - 🧹 Conversation resets automatically when you upload a new image
 - 🛟 Clear error messages when Ollama isn't running or a model is missing
 

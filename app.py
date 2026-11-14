@@ -19,6 +19,51 @@ SUMMARY_PROMPT = (
 )
 
 
+def photo_info(raw: bytes) -> dict:
+    """Camera, date, size and GPS from the image's EXIF metadata (empty values if absent)."""
+    from PIL import ExifTags, Image
+
+    info = {"size": "", "format": "", "camera": "", "taken": "", "software": "", "gps": None}
+    try:
+        img = Image.open(io.BytesIO(raw))
+    except Exception:
+        return info
+    info["size"] = f"{img.width} × {img.height}"
+    info["format"] = img.format or ""
+    exif = img.getexif()
+    if not exif:
+        return info
+    tags = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
+    sub = exif.get_ifd(0x8769)  # Exif sub-IFD holds DateTimeOriginal
+    taken = sub.get(36867) or tags.get("DateTime")
+    info["camera"] = " ".join(str(x).strip() for x in (tags.get("Make"), tags.get("Model")) if x).strip()
+    info["taken"] = str(taken or "").strip()
+    info["software"] = str(tags.get("Software") or "").strip()
+    gps = exif.get_ifd(0x8825)
+    try:
+        def deg(v, ref):
+            d = float(v[0]) + float(v[1]) / 60 + float(v[2]) / 3600
+            return -d if ref in ("S", "W") else d
+        if gps.get(2) and gps.get(4):
+            info["gps"] = (round(deg(gps[2], gps.get(1)), 5), round(deg(gps[4], gps.get(3)), 5))
+    except Exception:
+        info["gps"] = None
+    return info
+
+
+def strip_metadata(raw: bytes) -> tuple[bytes, str]:
+    """Re-encode the pixels only, dropping EXIF/GPS. Keeps orientation. Returns (bytes, extension)."""
+    from PIL import Image, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+    out = io.BytesIO()
+    if img.mode in ("RGBA", "LA", "P"):
+        img.save(out, format="PNG")
+        return out.getvalue(), "png"
+    img.convert("RGB").save(out, format="JPEG", quality=95)
+    return out.getvalue(), "jpg"
+
+
 def query_ollama(model: str, prompt: str, image_bytes: bytes, num_predict: int = 900, timeout=300):
     payload = {
         "model": model,
@@ -174,6 +219,23 @@ if st.session_state.get("image_id") != image_id:
     st.session_state.summary = None
 
 st.image(image_bytes, caption=uploaded.name, use_container_width=True)
+
+meta = photo_info(image_bytes)
+with st.expander("📷 Photo info & privacy" + ("  ·  ⚠️ contains GPS location" if meta["gps"] else "")):
+    rows = {"Size": meta["size"], "Format": meta["format"], "Camera": meta["camera"],
+            "Taken": meta["taken"], "Edited with": meta["software"]}
+    st.markdown("\n".join(f"- **{k}:** {v}" for k, v in rows.items() if v) or "No metadata found.")
+    if meta["gps"]:
+        lat, lon = meta["gps"]
+        st.warning(f"This photo reveals where it was taken ({lat}, {lon}). "
+                   "Strip the metadata before sharing it publicly.")
+        st.markdown(f"[View location on OpenStreetMap](https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=16/{lat}/{lon})")
+    if any(v for k, v in meta.items() if k not in ("size", "format")):
+        clean, ext = strip_metadata(image_bytes)
+        st.download_button("⬇️ Download a copy without metadata", clean,
+                           file_name=f"{uploaded.name.rsplit('.', 1)[0]}-clean.{ext}",
+                           mime="image/png" if ext == "png" else "image/jpeg")
+    st.caption("Read on your computer — nothing is uploaded anywhere.")
 
 c1, c2 = st.columns(2)
 with c1:
