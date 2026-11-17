@@ -64,17 +64,19 @@ def strip_metadata(raw: bytes) -> tuple[bytes, str]:
     return out.getvalue(), "jpg"
 
 
-def query_ollama(model: str, prompt: str, image_bytes: bytes, num_predict: int = 900, timeout=300):
+def query_ollama(model: str, prompt: str, image_bytes: bytes | None, num_predict: int = 900, timeout=300):
+    """Ask the model about an image — or, with image_bytes=None, a text-only question."""
     payload = {
         "model": model,
         "prompt": prompt,
-        "images": [base64.b64encode(image_bytes).decode("utf-8")],
         "stream": False,
         "options": {
             "num_predict": num_predict,
             "temperature": 0.4,
         },
     }
+    if image_bytes is not None:
+        payload["images"] = [base64.b64encode(image_bytes).decode("utf-8")]
     resp = requests.post(OLLAMA_API, json=payload, timeout=timeout)
     resp.raise_for_status()
     return resp.json().get("response", "").strip()
@@ -143,8 +145,84 @@ with st.sidebar:
                    "qwen2.5vl handles Indian languages best.")
     st.caption("Tip: For speed, use smaller images and reduce max tokens.")
 
-mode = st.radio("Mode", ["💬 Chat with one image", "📚 Batch summarise"], horizontal=True,
-                label_visibility="collapsed")
+mode = st.radio("Mode", ["💬 Chat with one image", "📚 Batch summarise", "🆚 Compare two images"],
+                horizontal=True, label_visibility="collapsed")
+
+# Compare works in two steps so it runs on every vision model (most small ones
+# accept only one image per request): describe each image in a fixed structure,
+# then compare the two descriptions with a text-only call.
+COMPARE_DESCRIBE_PROMPT = (
+    "Look ONLY at the image. List what you see in short lines under these headings: "
+    "Objects (with colour and position), People and what they are doing, Text visible, "
+    "Setting and lighting. Be specific and literal; do not guess."
+)
+
+
+def compare_prompt(desc_a: str, desc_b: str, focus: str = "") -> str:
+    return (
+        "Below are careful descriptions of two images, A and B.\n\n"
+        f"IMAGE A:\n{desc_a}\n\nIMAGE B:\n{desc_b}\n\n"
+        + (f"The user specifically wants to know: {focus.strip()}\n\n" if focus.strip() else "")
+        + "Compare them. Reply in Markdown with exactly three sections:\n"
+        "### Same in both\n- short bullet points\n"
+        "### Different\n- short bullet points, each saying what A has vs what B has\n"
+        "### In one sentence\nthe most important difference.\n"
+        "Only use facts from the descriptions."
+    )
+
+
+def comparison_markdown(name_a, name_b, desc_a, desc_b, result):
+    return "\n".join([
+        f"# Comparison: {name_a} vs {name_b}",
+        f"_Model: {model} · {datetime.now():%Y-%m-%d %H:%M}_", "",
+        result, "", "---", f"## Image A — {name_a}", desc_a, "", f"## Image B — {name_b}", desc_b, "",
+    ])
+
+
+if mode.startswith("🆚"):
+    ca, cb = st.columns(2)
+    file_a = ca.file_uploader("Image A", type=["jpg", "jpeg", "png"], key="cmp_a")
+    file_b = cb.file_uploader("Image B", type=["jpg", "jpeg", "png"], key="cmp_b")
+    if file_a:
+        ca.image(file_a.getvalue(), use_container_width=True)
+    if file_b:
+        cb.image(file_b.getvalue(), use_container_width=True)
+    if not (file_a and file_b):
+        st.info("Upload two images — before/after shots, two products, spot-the-difference puzzles…")
+        st.stop()
+    focus = st.text_input("Anything specific to compare? (optional)",
+                          placeholder="e.g. what changed in the room, which outfit is more formal")
+    pair_id = hashlib.sha1(file_a.getvalue() + b"|" + file_b.getvalue() + focus.encode()).hexdigest()
+    if st.session_state.get("cmp_id") != pair_id:
+        st.session_state.cmp_id = pair_id
+        st.session_state.cmp = None
+    if st.button("🆚 Compare", type="primary"):
+        with st.status("Comparing…", expanded=True) as status:
+            st.write("Looking at image A…")
+            desc_a = safe_query(model, COMPARE_DESCRIBE_PROMPT, file_a.getvalue(), 350)
+            desc_b = None
+            if desc_a:
+                st.write("Looking at image B…")
+                desc_b = safe_query(model, COMPARE_DESCRIBE_PROMPT, file_b.getvalue(), 350)
+            result = None
+            if desc_a and desc_b:
+                st.write("Comparing the two…")
+                result = safe_query(model, compare_prompt(desc_a, desc_b, focus) + language_instruction(language),
+                                    None, min(600, max_tokens))
+            if result:
+                st.session_state.cmp = (desc_a, desc_b, result)
+                status.update(label="Done", state="complete", expanded=False)
+            else:
+                status.update(label="Comparison failed", state="error")
+    if st.session_state.get("cmp"):
+        desc_a, desc_b, result = st.session_state.cmp
+        st.markdown(result)
+        with st.expander("What the model saw in each image"):
+            st.markdown(f"**Image A — {file_a.name}**\n\n{desc_a}\n\n**Image B — {file_b.name}**\n\n{desc_b}")
+        st.download_button("⬇️ Download comparison (Markdown)",
+                           comparison_markdown(file_a.name, file_b.name, desc_a, desc_b, result),
+                           file_name="image-comparison.md", mime="text/markdown")
+    st.stop()
 
 BATCH_PROMPT = (
     "Look ONLY at the image. Describe it in 2-3 sentences: the main subject, the setting, "
