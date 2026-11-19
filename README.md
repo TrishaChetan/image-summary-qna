@@ -8,6 +8,7 @@ Runs on local vision models through [Ollama](https://ollama.com).
 
 - 📝 Two-paragraph, 500+ word image summary
 - 💬 Chat-style Q&A with follow-up context (the last few turns are sent with each question)
+- 🔍 Zoom in on part of the image — pick a region (top left, centre, bottom right… or custom sliders) and questions go to an enlarged crop of just that part, so the model can read small text and spot small objects. The chosen area is outlined on a preview, and each answer in the chat and the export notes which region it was about
 - 🌐 Answers in your language — English, Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati, Spanish, French, German or Japanese
 - 🆚 Compare two images — similarities, differences and a one-line verdict, with an optional focus ("what changed in the room?")
 - 📚 Batch mode — upload up to 50 images, get a short summary of each with a progress bar, and download them all as CSV or Markdown

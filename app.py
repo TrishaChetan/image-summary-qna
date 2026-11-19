@@ -107,6 +107,57 @@ def language_instruction(language: str) -> str:
             f"Do not answer in English.")
 
 
+# Region presets as (left, top, width, height) fractions of the image
+REGIONS = {
+    "Whole image": None,
+    "Top left": (0, 0, .5, .5), "Top": (.25, 0, .5, .5), "Top right": (.5, 0, .5, .5),
+    "Left": (0, .25, .5, .5), "Centre": (.25, .25, .5, .5), "Right": (.5, .25, .5, .5),
+    "Bottom left": (0, .5, .5, .5), "Bottom": (.25, .5, .5, .5), "Bottom right": (.5, .5, .5, .5),
+    "Custom…": "custom",
+}
+MIN_CROP_SIDE = 768  # small crops are enlarged so the model can make out details
+
+
+def region_pixels(size, box):
+    """(left, top, width, height) fractions -> clamped pixel box (l, t, r, b), at least 8 px each way."""
+    w, h = size
+    l, t, bw, bh = box
+    left = max(0, min(w - 8, round(l * w)))
+    top = max(0, min(h - 8, round(t * h)))
+    right = max(left + 8, min(w, round((l + bw) * w)))
+    bottom = max(top + 8, min(h, round((t + bh) * h)))
+    return left, top, right, bottom
+
+
+def crop_region(raw: bytes, box) -> bytes:
+    """Crop to the region and enlarge small crops; returns PNG bytes."""
+    from PIL import Image, ImageOps
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    crop = img.crop(region_pixels(img.size, box))
+    longest = max(crop.size)
+    if longest < MIN_CROP_SIDE:
+        f = MIN_CROP_SIDE / longest
+        crop = crop.resize((round(crop.width * f), round(crop.height * f)), Image.LANCZOS)
+    out = io.BytesIO()
+    crop.save(out, "PNG")
+    return out.getvalue()
+
+
+def preview_with_box(raw: bytes, box) -> bytes:
+    """The image with the chosen region outlined and the rest dimmed."""
+    from PIL import Image, ImageDraw, ImageOps
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    img.thumbnail((900, 900))
+    l, t, r, b = region_pixels(img.size, box)
+    shade = Image.new("RGBA", img.size, (0, 0, 0, 110))
+    ImageDraw.Draw(shade).rectangle((l, t, r, b), fill=(0, 0, 0, 0))
+    img = Image.alpha_composite(img.convert("RGBA"), shade)
+    ImageDraw.Draw(img).rectangle((l, t, r - 1, b - 1), outline=(255, 210, 63, 255), width=max(2, img.width // 200))
+    out = io.BytesIO()
+    img.convert("RGB").save(out, "JPEG", quality=85)
+    return out.getvalue()
+
+
 def build_question_prompt(question: str, history: list) -> str:
     """Include earlier Q&A turns so follow-up questions have context."""
     context = ""
@@ -126,7 +177,8 @@ def transcript(name: str, model: str, summary, history: list, language: str = "E
     if history:
         lines.append("## Questions & answers")
         for turn in history:
-            lines += [f"**Q:** {turn['q']}", "", f"**A:** {turn['a']}", ""]
+            where = f" _(about: {turn['region'].lower()})_" if turn.get("region") else ""
+            lines += [f"**Q:** {turn['q']}{where}", "", f"**A:** {turn['a']}", ""]
     return "\n".join(lines)
 
 
@@ -287,7 +339,7 @@ if not uploaded:
     st.info("Upload an image to begin.")
     st.stop()
 
-image_bytes = uploaded.read()
+image_bytes = uploaded.getvalue()  # read() returns b"" on reruns
 image_id = hashlib.sha1(image_bytes).hexdigest()
 
 # Reset the conversation whenever a new image is uploaded
@@ -331,27 +383,51 @@ if st.session_state.summary:
         st.write(st.session_state.summary)
         st.caption(f"{len(st.session_state.summary.split())} words")
 
+# --- Zoom in: ask about one part of the image ---
+with st.expander("🔍 Zoom in on part of the image", expanded=st.session_state.get("region_name", "Whole image") != "Whole image"):
+    st.caption("Vision models miss small details. Pick a region and your questions go to an enlarged crop of it.")
+    region_name = st.selectbox("Ask about", list(REGIONS), key="region_name")
+    box = REGIONS[region_name]
+    if box == "custom":
+        rc1, rc2 = st.columns(2)
+        x0, x1 = rc1.slider("Left → right (%)", 0, 100, (25, 75))
+        y0, y1 = rc2.slider("Top → bottom (%)", 0, 100, (25, 75))
+        box = (x0 / 100, y0 / 100, max(1, x1 - x0) / 100, max(1, y1 - y0) / 100)
+    if box:
+        st.image(preview_with_box(image_bytes, box), caption=f"Questions will be about: {region_name.lower()}")
+if not box:
+    region_label = None
+elif region_name != "Custom…":
+    region_label = region_name
+else:
+    region_label = (f"custom region {round(box[0] * 100)}–{round((box[0] + box[2]) * 100)}% across, "
+                    f"{round(box[1] * 100)}–{round((box[1] + box[3]) * 100)}% down")
+ask_bytes = crop_region(image_bytes, box) if box else image_bytes
+
 for turn in st.session_state.history:
     with st.chat_message("user"):
         st.write(turn["q"])
+        if turn.get("region"):
+            st.caption(f"🔍 about: {turn['region'].lower()}")
     with st.chat_message("assistant"):
         st.write(turn["a"])
 
-question = st.chat_input("Ask a question about the image…")
+question = st.chat_input("Ask about the " + ("image…" if not region_label else f"{region_label.lower()}…"))
 if question:
     with st.chat_message("user"):
         st.write(question)
+        if region_label:
+            st.caption(f"🔍 about: {region_label.lower()}")
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            answer = safe_query(
-                model,
-                build_question_prompt(question, st.session_state.history) + language_instruction(language),
-                image_bytes,
-                min(400, max_tokens),
-            )
+            prompt = build_question_prompt(question, st.session_state.history)
+            if region_label:
+                prompt = ("This picture is a zoomed-in crop of a larger image "
+                          f"({region_label.lower()}). Answer about what is visible in this crop.\n" + prompt)
+            answer = safe_query(model, prompt + language_instruction(language), ask_bytes, min(400, max_tokens))
         if answer:
             st.write(answer)
-            st.session_state.history.append({"q": question, "a": answer})
+            st.session_state.history.append({"q": question, "a": answer, "region": region_label})
 
 if st.session_state.summary or st.session_state.history:
     st.download_button(
